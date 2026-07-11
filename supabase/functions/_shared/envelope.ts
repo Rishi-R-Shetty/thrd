@@ -156,16 +156,27 @@ export function serveFn(config: FnConfig, handler: Handler): void {
       console.error(`[${config.fnName}]`, e instanceof Error ? e.message : "unknown");
       return err(500, "internal");
     } finally {
-      // 5. Audit EVERY invocation. Best-effort: an audit failure must never
-      //    change the response the caller already received.
-      try {
-        await service.from("audit_log").insert({
-          user_id: callerId,
-          action: auditAction,
-          metadata: { outcome, ...extraMeta },
-        });
-      } catch (_) {
-        console.error(`[${config.fnName}] audit write failed`);
+      // 5. Audit only IDENTIFIED invocations — one row, success or failure.
+      //    Unauthenticated (401) and pre-auth kill-switch (503) rejections have
+      //    no callerId; DB-writing them would let an anonymous caller (anyone
+      //    holding the public anon key that passes the gateway) grow audit_log
+      //    without bound — Tier-4 cost amplification (amended Artifact B item 5).
+      //    Those are console-logged only. Audit failures never change the
+      //    response the caller already received.
+      if (callerId !== null) {
+        try {
+          await service.from("audit_log").insert({
+            user_id: callerId,
+            action: auditAction,
+            metadata: { outcome, ...extraMeta },
+          });
+        } catch (_) {
+          console.error(`[${config.fnName}] audit write failed`);
+        }
+      } else {
+        console.error(
+          `[${config.fnName}] unidentified invocation outcome=${outcome} ip=${clientIp(req)}`,
+        );
       }
     }
   });
