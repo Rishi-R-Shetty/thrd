@@ -241,6 +241,56 @@ begin
   end;
 end $$;
 
+-- [feature_flags] service-only kill switches: invisible and unwritable to A.
+do $$
+declare n int;
+begin
+  begin
+    select count(*) into n from public.feature_flags;
+    if n <> 0 then raise exception 'FAIL feature_flags: A sees % flag rows', n; end if;
+  exception when insufficient_privilege then null; -- no grant at all: even better
+  end;
+end $$;
+do $$
+begin
+  insert into public.feature_flags (key, enabled) values ('fn:evil', false);
+  raise exception 'FAIL feature_flags-write: A inserted a flag (service-role only)';
+exception when insufficient_privilege then null; -- expected
+end $$;
+do $$
+begin
+  update public.feature_flags set enabled = false where key = 'fn:submit_report';
+  -- 0 rows (RLS) or denied (no grant) are both acceptable; a successful flip is not.
+  if found then raise exception 'FAIL feature_flags-write: A flipped a kill switch'; end if;
+exception when insufficient_privilege then null; -- expected
+end $$;
+
+-- [rate_limit_counters] service-only counters: invisible and unwritable to A.
+do $$
+declare n int;
+begin
+  begin
+    select count(*) into n from public.rate_limit_counters;
+    if n <> 0 then raise exception 'FAIL rate_limit_counters: A sees % rows', n; end if;
+  exception when insufficient_privilege then null; -- no grant at all: even better
+  end;
+end $$;
+do $$
+begin
+  insert into public.rate_limit_counters (bucket_key, window_start, count)
+  values ('spoof:user:'||auth.uid(), now(), 0);
+  raise exception 'FAIL rate_limit_counters-write: A wrote a counter (service-role only)';
+exception when insufficient_privilege then null; -- expected
+end $$;
+
+-- [consume_rate_limit] the limiter RPC is not callable by clients.
+do $$
+begin
+  perform public.consume_rate_limit('[]'::jsonb);
+  raise exception 'FAIL rate-limit-rpc: A executed consume_rate_limit (service-role only)';
+exception when insufficient_privilege then null; -- expected
+end $$;
+
 -- [anon] signed-out client sees nothing anywhere.
 set local role anon;
 set local request.jwt.claims to '{"role":"anon"}';
@@ -248,7 +298,8 @@ do $$
 declare t text; n int;
 begin
   foreach t in array array['users','spaces','communities','community_memberships',
-                           'events','tickets','reports','blocks','audit_log']
+                           'events','tickets','reports','blocks','audit_log',
+                           'feature_flags','rate_limit_counters']
   loop
     begin
       execute format('select count(*) from public.%I', t) into n;
