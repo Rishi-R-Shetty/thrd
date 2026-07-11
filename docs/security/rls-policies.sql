@@ -1,0 +1,157 @@
+-- ============================================================================
+-- Thrd Spaces — Artifact A: RLS Policy Specification
+-- Phase 1, task T3 · Owner: orchestrator · Status: Phase 1 policies MIGRATED
+--
+-- This is the SPECIFICATION: every table, every policy, every role, including
+-- policies planned for later phases (marked PLANNED, do-not-migrate-yet).
+-- The executable Phase 1 subset lives in supabase/migrations/0001_initial_schema.sql
+-- and must stay byte-consistent with the MIGRATED blocks below. The hostile-user
+-- assertions live in supabase/tests/rls_hostile_user_tests.sql.
+--
+-- Ground rules (threat-model.md Layer 4):
+--   1. Default deny: RLS enabled on every table in the same migration that
+--      creates it; zero policies means zero access.
+--   2. service_role never ships to clients; it exists only in Edge Functions.
+--   3. Every policy here has a hostile-user test.
+--   4. Column-level restrictions RLS can't express are enforced with
+--      column-scoped GRANTs (revoke-all first, grant back minimally).
+--   5. Authorization fields are never client-writable: trust_score,
+--      verification_status, reporter_id, blocker_id, deletion_requested_at,
+--      rsvp_count, member_count, profile_visibility (until Phase 2 settings).
+-- ============================================================================
+
+-- ────────────────────────────────────────────────────────────── roles ───────
+-- anon           : signed-out clients. Phase 1: zero grants, zero policies.
+-- authenticated  : signed-in clients (anon key + user JWT). Minimal grants below.
+-- service_role   : Edge Functions only. BYPASSRLS; still bound by GRANTs
+--                  (used to make audit_log insert-only even for functions).
+
+-- ══════════════════════════════════════════════════════════════ users ═══════
+-- MIGRATED (Phase 1)
+--   users_select_own   : SELECT USING (auth.uid() = id)
+--   users_insert_own   : INSERT WITH CHECK (auth.uid() = id)
+--   users_update_own   : UPDATE USING/WITH CHECK (auth.uid() = id)
+--   grants: SELECT(all cols, own row); INSERT(id, handle, display_name, bio,
+--           interests); UPDATE(handle, display_name, bio, interests, home_geohash)
+--   Deliberately non-writable: avatar_url (D2 — no upload until CSAM pipeline),
+--   verification_status, trust_score, profile_visibility, deletion_requested_at.
+--
+-- Cross-user reads NEVER touch the base table. They go through:
+--   public_profiles (VIEW, security_invoker=off, security_barrier):
+--     SELECT id, handle, display_name, avatar_url, interests
+--     FROM users WHERE profile_visibility='public' AND deletion_requested_at IS NULL
+--   Definer semantics are deliberate (threat-model reference pattern): the view
+--   is the column filter. Never add columns to this view without a decision log.
+--
+-- PLANNED (Phase 2): grant UPDATE(profile_visibility) when the privacy settings
+--   screen ships. PLANNED (Phase 4): trust_score recalculation is a scheduled
+--   function; still no client path.
+
+-- ══════════════════════════════════════════════════════════════ spaces ══════
+-- MIGRATED (Phase 1)
+--   spaces_select_authenticated : SELECT TO authenticated USING (true)
+--   Venues are public content; exact coordinates are acceptable for venues.
+--   No client writes at any phase — spaces enter via admin import (Phase 2
+--   seed pipeline) and the claim flow is a Phase-3+ Edge Function.
+--
+-- NOTE (Phase 2): public *queries* over spaces must go through the geohash-
+--   coarsened RPC (bounding-box search), not raw PostGIS operators, per the
+--   location-minimization guard. The SELECT policy does not change; the RPC is
+--   the query surface.
+
+-- ═════════════════════════════════════════════════════════ communities ══════
+-- MIGRATED (Phase 1)
+--   communities_select_public : SELECT TO authenticated USING (visibility='public')
+--
+-- PLANNED (Phase 3, when membership flows ship):
+--   communities_select_member : SELECT USING (EXISTS (
+--     SELECT 1 FROM community_memberships m
+--     WHERE m.community_id = communities.id AND m.user_id = auth.uid()))
+--   -- members see approval/private communities they belong to.
+--   Creation/updates: Edge Function only (create_community), never direct.
+
+-- ═══════════════════════════════════════════════ community_memberships ══════
+-- MIGRATED (Phase 1)
+--   memberships_select_own : SELECT USING (user_id = auth.uid())
+--
+-- PLANNED (Phase 3):
+--   memberships_select_comembers : SELECT USING (community visible to viewer AND
+--     viewer is a member) — needed for the members grid; MUST exclude rows where
+--     a block exists in either direction (blocked-user invisibility guard).
+--   All INSERT/UPDATE/DELETE via Edge Functions (join/leave/promote) — rule 8.
+
+-- ══════════════════════════════════════════════════════════════ events ══════
+-- MIGRATED (Phase 1)
+--   events_select_published : SELECT TO authenticated USING (status='published')
+--
+-- PLANNED (Phase 2): hosts read their own drafts:
+--   events_select_own_drafts : SELECT USING (host_id = auth.uid())
+-- PLANNED (Phase 3): creation via Edge Function (create_event) which validates
+--   RRULE, capacity, tier for paid events. Never a direct INSERT policy.
+
+-- ═════════════════════════════════════════════════════════════ tickets ══════
+-- MIGRATED (Phase 1)
+--   tickets_select_own_or_host : SELECT USING (user_id = auth.uid() OR EXISTS (
+--     SELECT 1 FROM events e WHERE e.id = tickets.event_id AND e.host_id = auth.uid()))
+--   (threat-model reference policy: only hosts see the full attendee list)
+--
+-- PLANNED (Phase 2): free RSVP goes through Edge Function rsvp_event (capacity
+--   check + waitlist must be transactional server-side; never trust client
+--   counts). No direct INSERT policy even for free events.
+-- PLANNED (Phase 2): attendee-visible subset for confirmed attendees within
+--   the event window is a VIEW with first-name/avatar only, blocked users
+--   excluded (attendee-list privacy guard).
+
+-- ═════════════════════════════════════════════════════════════ reports ══════
+-- MIGRATED (Phase 1): ZERO client policies, ZERO client grants.
+--   Write path: submit_report Edge Function (service_role) only.
+--   Read path: moderation tooling (Phase 3/4), service_role only.
+--   Rationale: a reporter must never be discoverable by the reported user;
+--   the simplest leak-proof shape is total client invisibility.
+
+-- ══════════════════════════════════════════════════════════════ blocks ══════
+-- MIGRATED (Phase 1)
+--   blocks_select_own : SELECT USING (blocker_id = auth.uid())
+--   No client INSERT/DELETE — manage_block Edge Function only (D4, rule 8).
+--   The blocked user must never learn they are blocked: no policy exposes
+--   rows where auth.uid() = blocked_id, and Phase-2 invisibility joins use
+--   blocks_blocked_idx from the service side.
+
+-- ═══════════════════════════════════════════════════════════ audit_log ══════
+-- MIGRATED (Phase 1)
+--   audit_insert_consent : INSERT WITH CHECK (user_id = auth.uid()
+--                            AND action IN ('age_attestation','eula_accept'))
+--   No SELECT/UPDATE/DELETE policies for clients.
+--   Immutability: UPDATE/DELETE revoked from anon, authenticated AND
+--   service_role — insert-only for everything below the postgres owner.
+--   A1 contract: age_attestation metadata = { device_id, method: "api"|
+--   "attestation", api_result: String? }. Enforced by the T6 client and
+--   re-validated whenever a server path writes the same action.
+
+-- ══════════════════════════════════ future tables (Phase 3/4, spec only) ════
+-- messages / channels / channel_members (Phase 4):
+--   messages_select_channel_members : SELECT USING (EXISTS (
+--     SELECT 1 FROM channel_members cm
+--     WHERE cm.channel_id = messages.channel_id AND cm.user_id = auth.uid()))
+--   plus block-pair exclusion in both directions. INSERT via policy WITH CHECK
+--   (sender_id = auth.uid() AND membership exists AND no block pair) — direct
+--   insert acceptable here because it affects only channels you belong to;
+--   media_url must reference storage objects that passed the CSAM pipeline.
+--
+-- Verification tier gates (Phase 3/4): capability checks (host paid events,
+--   payouts) are Edge Function logic reading verification_status server-side —
+--   never RLS-expressible, never client-asserted.
+
+-- ═══════════════════════════════════════════════════════ test coverage ══════
+-- supabase/tests/rls_hostile_user_tests.sql asserts, as hostile user A:
+--   users: can't read/update B's row; can't escalate verification_status,
+--     trust_score, avatar_url; can't insert foreign id; private profile hidden
+--     from public_profiles.
+--   communities: private invisible; memberships: only own rows.
+--   events: drafts invisible; no update path. tickets: foreign tickets
+--     invisible; no forge path. reports: fully invisible/unwritable.
+--   blocks: B's block of A invisible; no direct writes.
+--   audit_log: unreadable; can't log as B; can't log non-consent actions.
+--   anon: zero rows on all nine tables.
+-- Every future policy added from the PLANNED sections must land with a
+-- matching hostile assertion in the same migration PR — no exceptions.
