@@ -4,12 +4,17 @@
 
 Every privileged operation runs here — anything needing business-logic authorization beyond row ownership. Common envelope required by **every** function (threat-model Layer 5):
 
-1. **JWT verification server-side.** Parse and verify the caller's JWT with the project JWT secret; derive `caller_id` from the verified `sub`. Never read a user id from the request body for authorization.
-2. **Rate limit** per-user and per-IP (limits below). Backing store: `rate_limit_counters` table (function-scoped keys, windowed counts); return `429 {"error":"rate_limited"}` with no further detail.
-3. **Audit write** to `audit_log` via service client (one row per invocation, success or failure, with `outcome` in metadata).
-4. **Kill switch:** read `feature_flags` row `fn:<name>` at entry; if disabled return `503 {"error":"unavailable"}`. Flags table is service-role-only, flipped from the dashboard without a deploy.
-5. **Error shape:** `{"error": "<stable_code>"}` only. No SQL, no schema names, no stack traces, no "user not found" vs "wrong password" distinctions.
-6. **Secrets:** service-role key from Edge Function env only. It never appears in responses, logs, or client code.
+Fixed envelope order (amended at T7b review — the original list contradicted its own checklist on kill-switch-vs-JWT ordering):
+
+1. **Kill switch** (constant-key `feature_flags` read — the only pre-auth DB touch): disabled → `503 {"error":"unavailable"}`. Missing flag row = enabled (disabling is opt-in; Phase-1 flags are seeded).
+2. **JWT verification server-side.** Verify the signature with the project JWT secret **before parsing any claim**; pin `alg=HS256`; check `exp`/`nbf`; require `role=authenticated` and a UUID `sub`. Derive `caller_id` only from the verified `sub`. Never read a user id from the request body for authorization.
+3. **Rate limit** per-user and per-IP (limits below), atomically via the `consume_rate_limit` RPC; over-limit → `429 {"error":"rate_limited"}`.
+4. **Validate + effect.**
+5. **Audit write** to `audit_log` (one row per **identified** invocation — success or failure — with `outcome` in metadata). Unauthenticated/kill-switch rejections are console-logged only, never DB-written: an anonymous caller must not be able to grow `audit_log` unboundedly (Tier-4 cost amplification). Audit failures never change an already-computed response.
+6. **Error shape:** `{"error": "<stable_code>"}` only, plus `500 internal` for anything unexpected. No SQL, no schema names, no stack traces, no existence oracles beyond what a function's spec explicitly allows.
+7. **Secrets:** service-role key and `THRD_JWT_SECRET` from Edge Function env only; never in responses, logs, or client code.
+
+**Deployment posture:** platform `verify_jwt` stays default-ON (belt and suspenders — but note the public anon key is itself a validly-signed JWT that passes the gateway, so the in-function `role=authenticated` check is load-bearing, not redundant). Missing-token requests therefore get the gateway's 401 shape rather than ours; acceptable. Set the verification secret with `supabase secrets set THRD_JWT_SECRET=…` per environment.
 
 > The `rate_limit_counters` and `feature_flags` tables are created in migration `0002_edge_function_support.sql` (T7b writes it; both tables RLS-enabled, zero client policies, hostile-test asserted).
 
@@ -24,7 +29,7 @@ App Store 5.1.1(v) + DPDP erasure. Two-step server flow: grace-mark now, purge j
 | **Route** | `POST /functions/v1/delete_account` |
 | **Input** | `{ "confirm": true }` — nothing else. Caller identity from JWT only. |
 | **Authorization** | `caller_id` = verified JWT sub. A user can delete only themselves. Idempotent: repeat calls while already in grace return `200 {"status":"pending_deletion","purge_after":…}`. |
-| **Effect** | In one transaction: set `users.deletion_requested_at = now()`; invalidate all sessions/refresh tokens for the user (Supabase admin API); audit `account_delete_request`. The nightly purge job (pg_cron, spec'd Phase 2) hard-deletes PII after 30 days: `auth.users` row (cascades to `public.users`), tickets, memberships, blocks either direction; reports and audit rows are retained but re-keyed to `sha256(user_id || server_pepper)` for legal retention. |
+| **Effect** | Set `users.deletion_requested_at = now()` (concurrency-guarded, idempotent); then invalidate all sessions/refresh tokens via the admin API — *best-effort*, since the admin API cannot join a DB transaction: the grace mark is the source of truth and the purge job re-revokes at hard-delete (amended at T7b review). Audit `account_delete_request`. The nightly purge job (pg_cron, spec'd Phase 2) hard-deletes PII after 30 days: `auth.users` row (cascades to `public.users`), tickets, memberships, blocks either direction; reports and audit rows are retained but re-keyed to `sha256(user_id || server_pepper)` for legal retention. |
 | **Grace behavior** | `public_profiles` already excludes grace-period users (view predicate). Sign-in during grace → offer cancel-deletion flow (clears the timestamp, audits `account_delete_cancelled`). |
 | **Rate limit** | 3/user/day, 10/IP/hour. |
 | **Audit** | `action: "account_delete_request"`, metadata `{ device_id?, outcome }`. |
