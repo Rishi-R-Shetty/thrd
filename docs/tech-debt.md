@@ -41,3 +41,10 @@ Format:
 **Known limit:** ThrdButton primary and selected chips render normal-size white text below the 4.5:1 AA threshold — an accessibility-audit finding waiting to happen (App Store 4.0 design/a11y risk area).
 **Upgrade path:** darken terracotta light to ~(0.78, 0.38, 0.26) or bump button text to bold ≥18pt (large-text threshold is 3:1); verify both modes with a contrast checker.
 **Owner phase:** Phase 1, T10 phase-exit accessibility pass (design decision, needs one user sign-off on the adjusted hue).
+
+## TD5 — Placeholder handle collisions at scale
+**Where:** thrdspaces/thrdspaces/Features/Onboarding/AuthRepository.swift:135 (`placeholderHandle(for:)`)
+**Shortcut:** first-auth profile rows get `user_` + first 8 hex chars of the UUID; `handle` is UNIQUE.
+**Known limit:** birthday bound ≈65k never-customized handles → unique-violation on signup surfaced as a generic error. Irrelevant at Phase 1–2 scale.
+**Upgrade path:** on 23505 retry with the next 4 UUID chars appended, or move placeholder generation server-side (trigger on auth.users insert — also fixes the T5 ponytail about transient ensureUserRow failures).
+**Owner phase:** Phase 3 (before growth marketing), or whenever the auth.users trigger lands.
