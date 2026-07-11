@@ -1,6 +1,15 @@
 # Phase 1 Plan — Core Setup & Auth (Weeks 1–3)
 
-**Status:** APPROVED — 2026-07-11, with three user amendments (A1–A3), incorporated below. D1 confirmed by user: T6/T7 stay in Phase 1. Loop 2 active.
+**Status:** BUILD COMPLETE — 2026-07-12. All tasks T1–T9 approved (log below). T10 verification done to the extent possible without the hosted deploy; **phase exit is conditionally met** pending the user actions listed below (schema push, function deploy, provider config, device pass).
+
+**T10 completion notes (Loop 4):**
+- Verified: full build green; complete test suite green (44 tests); `service_role` absent from built product and swift/plist tree (grep, actual `.app` path); hostile-user RLS suite green as of the last SQL change (`5b18cc9` — two independent green runs on identical SQL; Docker was down for a final re-run, deliberately not restarted).
+- PRD exit criteria ("sign up, set interests, empty Discover shell"): every client path implemented, reviewed, and sim/test-verified; TRUE end-to-end demonstration requires the hosted schema push + at least one auth provider (user actions 1–3).
+- Housekeeping: `xcuserdata/` untracked + gitignored (`637e4bc`).
+- Open user decision: **TD4** terracotta contrast (see tech-debt.md) — needs sign-off before the pre-submission accessibility audit; not blocking Phase 2 start.
+- CLAUDE.md updated with Phase 1 learnings. Phase 2 draft: `.claude/plans/phase-2.md` — awaiting user review per Loop 4.
+
+Original approval: 2026-07-11, with three user amendments (A1–A3), incorporated below. D1 confirmed by user: T6/T7 stay in Phase 1.
 
 **User amendments at approval:**
 - **A1:** T6 `age_attestation` audit entry gets a mandatory metadata shape (see T6 contract).
@@ -172,4 +181,5 @@ RLS default-deny on every table (T3) · service-role key nowhere in repo/bundle 
 - **T5 — APPROVED, client-side** (2026-07-11, commit `adc7f3a`). Nonce lifecycle correct and tested; auth boundary in one file; non-leaking errors; 14/14 tests; live-backend OTP error surfaced gracefully (`phone_provider_disabled` — SMS provider not yet configured). On-device exit criteria tracked in docs/manual-verification/T5.md, open pending user's dashboard config + device pass. TD5 logged (placeholder-handle collision at scale). T6 inherits two hard requirements: re-ensure user row on coordinator entry; `await auth.session` refresh-on-launch.
 - **T6 — APPROVED** (2026-07-12, commit `72737e8`). Age gate fails closed, consent-write-before-active with retry, A1 metadata byte-exact (accepted interpretation: `api_result` = coarse `18_or_over`/`under_18` category — more private than raw range), interest slugs validated client-side as the trust boundary, both T5 ponytails closed. pbxproj auto-change scanned: legitimate test-target dependency only. Deploy-time prerequisite added to user actions: `com.apple.developer.declared-age-range` entitlement + provisioning before the age API returns real results (attestation fallback until then).
 - **T7a — APPROVED, client-side** (2026-07-12, commit `f0d43c2`). Identity never in request bodies (verified by read); deletion signs out only on confirmed 200; A3/D2 held; 38/38 tests. Hosted schema/functions were absent → mocked-transport verification; live E2E deferred to docs/manual-verification/T7a.md pending user deploy. Phase 2 note: re-mount ReportSheet's ⋯ menu on public profiles when they exist.
-- **T8 — APPROVED** (2026-07-11, commit `a521576`). LocationManager clean: reduced accuracy, geohash-5 hard cap verified against known vector, no auto-prompt, no persistence/networking, purpose string in built product. Review notes for T9: consider one-shot `requestLocation()` per Discover appearance instead of continuous updates; Swift-6 strict-concurrency delegate conformance will need attention at language-mode bump.
+- **T8 — APPROVED** (2026-07-11, commit `a521576`).
+- **T9 — APPROVED** (2026-07-12, commit `d043e08`). Monolith → view/view-model/repository-protocol; TD1+TD2 fixed and grep-verified; location-denied state with Settings deep-link; zero permission-prompt call sites in Discover; 44/44 tests. Found+fixed a real CLLocationManager authorization-callback race in the test seam. Phase 2 notes: repository protocol needs a distance-annotated return shape (computed PostGIS field, not an entity field); resolve `categoryIcon`. LocationManager clean: reduced accuracy, geohash-5 hard cap verified against known vector, no auto-prompt, no persistence/networking, purpose string in built product. Review notes for T9: consider one-shot `requestLocation()` per Discover appearance instead of continuous updates; Swift-6 strict-concurrency delegate conformance will need attention at language-mode bump.
