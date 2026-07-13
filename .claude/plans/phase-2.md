@@ -1,6 +1,6 @@
 # Phase 2 Plan — Discovery & Maps (Weeks 4–7)
 
-**Status:** DRAFT — awaiting user approval. No builds start until this line reads APPROVED.
+**Status:** APPROVED — 2026-07-13 by user. Loop 2 active: T11 → Sonnet, T12 → orchestrator.
 **Sources:** PRD §4 Phase 2 + §2 entities · threat-model.md §5 Phase 2 must-haves · app-store-plan.md (§3 privacy manifests, §5.1.5 location) · Artifact A PLANNED policies · Artifact B stubs · Phase 1 completion notes · decisions D6–D9 (two-city defaults, OSM sourcing, coarsening semantics, device-local emergency contact).
 **Precondition met:** TD4 light-mode terracotta landed (`bdfaa78`) before any Phase 2 build, per user instruction.
 
@@ -117,3 +117,5 @@ D8 coarsening: user coordinates never leave the device unsnapped; RPCs re-snap s
 ## Task approval log
 
 *(Loop 3 appends one line per approved task here.)*
+
+- **T12 — COMPLETE** (2026-07-13, orchestrator). Migration 0003 applies on a fresh stack (0001→0003); extended hostile suite green — new assertions: geohash-5-only RPC boundary (6-char and raw-coord inputs rejected), Mumbai excluded from a Bengaluru cell at the 10km cap, `source_ref` unreadable (42501), own-drafts visible / foreign drafts not, attendee_previews first-name+avatar-only with no handle column, anon denied on the RPCs. One Phase-1 assertion updated by design (foreign-draft invariant). One fix during verification: `assert_geohash5` needed authenticated EXECUTE under SECURITY INVOKER. Artifact A PLANNED→MIGRATED; Artifact B gained full `rsvp_event` + `purge_deleted_accounts` specs (T16 builds only from these).

@@ -43,9 +43,9 @@
 --   Definer semantics are deliberate (threat-model reference pattern): the view
 --   is the column filter. Never add columns to this view without a decision log.
 --
--- PLANNED (Phase 2): grant UPDATE(profile_visibility) when the privacy settings
---   screen ships. PLANNED (Phase 4): trust_score recalculation is a scheduled
---   function; still no client path.
+-- MIGRATED (0003): UPDATE(profile_visibility) granted for the Phase 2 privacy
+--   settings screen. PLANNED (Phase 4): trust_score recalculation is a
+--   scheduled function; still no client path.
 
 -- ══════════════════════════════════════════════════════════════ spaces ══════
 -- MIGRATED (Phase 1)
@@ -54,10 +54,15 @@
 --   No client writes at any phase — spaces enter via admin import (Phase 2
 --   seed pipeline) and the claim flow is a Phase-3+ Edge Function.
 --
--- NOTE (Phase 2): public *queries* over spaces must go through the geohash-
---   coarsened RPC (bounding-box search), not raw PostGIS operators, per the
---   location-minimization guard. The SELECT policy does not change; the RPC is
---   the query surface.
+-- MIGRATED (0003, D8): the ONLY location-query surface is the RPC pair
+--   nearby_spaces/nearby_events (SECURITY INVOKER, authenticated-only). Input
+--   is exactly a geohash-5 CELL (assert_geohash5 rejects anything else with
+--   22023) — user coordinates are snapped on-device and never reach the server
+--   raw. Venue rows return exact lat/lng (public places, D8). Radius is capped
+--   at 10km server-side.
+-- MIGRATED (0003, D7): spaces.source_ref (seed provenance) exists with ZERO
+--   client visibility — the 0001 table-level SELECT grant was re-issued
+--   column-scoped to exclude it. Hostile test asserts 42501 on read.
 
 -- ═════════════════════════════════════════════════════════ communities ══════
 -- MIGRATED (Phase 1)
@@ -84,8 +89,9 @@
 -- MIGRATED (Phase 1)
 --   events_select_published : SELECT TO authenticated USING (status='published')
 --
--- PLANNED (Phase 2): hosts read their own drafts:
+-- MIGRATED (0003): hosts read their own drafts:
 --   events_select_own_drafts : SELECT USING (host_id = auth.uid())
+--   (hostile suite's foreign-draft assertion updated accordingly)
 -- PLANNED (Phase 3): creation via Edge Function (create_event) which validates
 --   RRULE, capacity, tier for paid events. Never a direct INSERT policy.
 
@@ -98,9 +104,14 @@
 -- PLANNED (Phase 2): free RSVP goes through Edge Function rsvp_event (capacity
 --   check + waitlist must be transactional server-side; never trust client
 --   counts). No direct INSERT policy even for free events.
--- PLANNED (Phase 2): attendee-visible subset for confirmed attendees within
---   the event window is a VIEW with first-name/avatar only, blocked users
---   excluded (attendee-list privacy guard).
+-- MIGRATED (0003, partial): attendee_previews VIEW (definer, barrier) —
+--   first_name + avatar_url only, going tickets on published events, deleting
+--   accounts excluded; no handle column exists at all. Deliberately visible to
+--   any authenticated user (PRD social proof; attending a published event is a
+--   public act — profile_visibility does not hide it; flagged to user in the
+--   Phase 2 plan risks). Blocked-pair exclusion lands in 0005 (T18).
+--   Exact-coordinate/2h-window rules apply to future exact-meet-point fields,
+--   not to this view (D8).
 
 -- ═════════════════════════════════════════════════════════════ reports ══════
 -- MIGRATED (Phase 1): ZERO client policies, ZERO client grants.

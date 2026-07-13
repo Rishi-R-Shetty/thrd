@@ -67,12 +67,35 @@ Blocking affects another user → Edge Function per threat-model rule 8. Only wr
 
 ---
 
-## Deferred to later phases (inventory stubs — spec before build)
+## 4. `rsvp_event` (Phase 2 — spec'd in T12, built in T16 under the A2 review gate)
 
-| Function | Phase | One-line scope |
-|---|---|---|
-| `rsvp_event` | 2 | Free RSVP: transactional capacity check + waitlist; never trusts client counts. |
-| `purge_deleted_accounts` | 2 | Nightly pg_cron job executing the 30-day hard-delete described above. |
+The only write path to `tickets` in Phase 2 (free events). Capacity is decided inside the function's transaction — client counts are never trusted.
+
+| | |
+|---|---|
+| **Route** | `POST /functions/v1/rsvp_event` |
+| **Input** | `{ "event_id": uuid, "action": "rsvp" \| "cancel" }` — identity from JWT only. |
+| **Authorization** | Event must be `published`, `starts_at` in the future (else `400 event_not_open`; drafts and unknown ids both return `404 not_found` — no draft-existence oracle). Tier-0 cap (threat-model Layer 3): callers with `verification_status = 'none'` may RSVP only to free events with `capacity <= 20` (`403 verification_required`); read `verification_status` server-side inside the transaction. Paid events: `400 event_not_open` in Phase 2 (purchases are Phase 3). |
+| **Effect (one transaction, `SELECT … FOR UPDATE` on the event row)** | `rsvp`: existing active ticket → idempotent 200 with current status. Else insert ticket `going` if `capacity IS NULL OR rsvp_count < capacity`, else `waitlist`; increment `rsvp_count` only for `going`. `cancel`: mark own ticket `cancelled`; if it was `going`, decrement and promote the oldest `waitlist` ticket to `going` (net count unchanged on promotion). |
+| **Response** | `200 { "status": "going" \| "waitlist" \| "cancelled", "rsvp_count": int }`. |
+| **Rate limit** | 30/user/hour, 60/IP/hour (rapid RSVP-then-cancel is a Layer-9 anomaly signal — audit rows feed it). |
+| **Audit** | `action: "rsvp"` or `"rsvp_cancel"`, metadata `{ event_id, outcome, resulting_status }`. |
+| **Errors** | envelope codes + `400 event_not_open` · `403 verification_required` · `404 not_found` · `400 invalid_action`. |
+| **Grants (migration 0004)** | service_role: SELECT/INSERT/UPDATE column-scoped on `tickets`; UPDATE (`rsvp_count`) on `events` (D5 pattern). |
+
+## 5. `purge_deleted_accounts` (Phase 2 — spec'd in T12, built in T16)
+
+Nightly pg_cron job (03:30 IST) completing `delete_account`'s 30-day grace.
+
+| | |
+|---|---|
+| **Trigger** | pg_cron schedule, not HTTP. **Job owner: `postgres`** — this is the SOLE, documented exception to audit_log immutability: re-keying purged users' audit rows requires UPDATE, which every role below the owner has revoked. No other code path may run as owner. |
+| **Effect (per user with `deletion_requested_at < now() - interval '30 days'`)** | (1) audit rows: `user_id → NULL`, metadata gains `{ "purged_user": sha256(user_id \|\| server_pepper) }` (pepper from a vault secret — uuid column can't hold a hash, hence NULL + metadata); (2) `DELETE FROM auth.users` → cascades to `public.users`, tickets, memberships, blocks (both directions), reports.reporter cascade; (3) one summary audit row `{ action: "purge_run", metadata: { purged: n } }`. |
+| **Idempotency** | re-running skips already-purged users (grace predicate no longer matches). |
+| **Kill switch** | `feature_flags` row `fn:purge_deleted_accounts` checked at entry. |
+| **Errors** | failures logged, job never partially re-keys without deleting (re-key and delete per-user in one transaction). |
+
+## Deferred to later phases (inventory stubs — spec before build)
 | `create_community` / `join_community` | 3 | Rule-8 membership mutations, tier logic. |
 | `create_event` | 3 | RRULE validation, tier-2 gate for paid, venue acceptance. |
 | `purchase_ticket` | 3 | Server-side price lookup, payment intent, PCI SAQ-A boundary. |

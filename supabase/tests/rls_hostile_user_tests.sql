@@ -31,6 +31,12 @@ insert into public.spaces (id, name, category, location, address) values
   ('33333333-3333-3333-3333-333333333333', 'Test Cafe', 'cafe',
    extensions.st_point(77.5946, 12.9716)::extensions.geography, 'Bengaluru');
 
+-- 0003 fixtures: a second-city space (must fall outside a Bengaluru-cell query
+-- at the 10km radius cap) and seed provenance on the first space.
+insert into public.spaces (id, name, category, location, address, source_ref) values
+  ('33333333-3333-3333-3333-333333333302', 'Mumbai Cafe', 'cafe',
+   extensions.st_point(72.8777, 19.0760)::extensions.geography, 'Mumbai', 'osm:node/999');
+
 insert into public.communities (id, creator_id, name, visibility) values
   ('44444444-4444-4444-4444-444444444401', '22222222-2222-2222-2222-222222222222', 'B Public Club', 'public'),
   ('44444444-4444-4444-4444-444444444402', '22222222-2222-2222-2222-222222222222', 'B Private Club', 'private');
@@ -42,7 +48,10 @@ insert into public.events (id, host_id, space_id, title, starts_at, ends_at, sta
   ('55555555-5555-5555-5555-555555555501', '22222222-2222-2222-2222-222222222222',
    '33333333-3333-3333-3333-333333333333', 'B published event', now() + interval '1 day', now() + interval '1 day 2 hours', 'published'),
   ('55555555-5555-5555-5555-555555555502', '22222222-2222-2222-2222-222222222222',
-   '33333333-3333-3333-3333-333333333333', 'B draft event', now() + interval '2 days', now() + interval '2 days 2 hours', 'draft');
+   '33333333-3333-3333-3333-333333333333', 'B draft event', now() + interval '2 days', now() + interval '2 days 2 hours', 'draft'),
+  -- 0003 fixture: A's own draft (events_select_own_drafts must show it to A only)
+  ('55555555-5555-5555-5555-555555555503', '11111111-1111-1111-1111-111111111111',
+   '33333333-3333-3333-3333-333333333333', 'A draft event', now() + interval '3 days', now() + interval '3 days 2 hours', 'draft');
 
 insert into public.tickets (id, event_id, user_id) values
   ('66666666-6666-6666-6666-666666666601', '55555555-5555-5555-5555-555555555501',
@@ -146,12 +155,15 @@ begin
   if n <> 0 then raise exception 'FAIL memberships: A sees % foreign membership rows', n; end if;
 end $$;
 
--- [events] drafts invisible; published visible.
+-- [events] foreign drafts invisible; published visible. (Since 0003,
+-- events_select_own_drafts intentionally lets a host see their OWN drafts —
+-- the invariant is zero non-published events belonging to anyone else.)
 do $$
 declare n int;
 begin
-  select count(*) into n from public.events where status <> 'published';
-  if n <> 0 then raise exception 'FAIL events: A sees a non-published event'; end if;
+  select count(*) into n from public.events
+  where status <> 'published' and host_id <> auth.uid();
+  if n <> 0 then raise exception 'FAIL events: A sees a foreign non-published event'; end if;
   select count(*) into n from public.events where id = '55555555-5555-5555-5555-555555555501';
   if n <> 1 then raise exception 'FAIL events: published event not visible'; end if;
 end $$;
@@ -291,6 +303,88 @@ begin
 exception when insufficient_privilege then null; -- expected
 end $$;
 
+-- ═══════════════════════════════ 0003 geo-read layer (Phase 2, T12) ═════════
+
+-- [events] A sees own draft via events_select_own_drafts; B's draft still hidden.
+do $$
+declare n int;
+begin
+  select count(*) into n from public.events
+  where id = '55555555-5555-5555-5555-555555555503';
+  if n <> 1 then raise exception 'FAIL drafts: A cannot see own draft'; end if;
+  select count(*) into n from public.events
+  where id = '55555555-5555-5555-5555-555555555502';
+  if n <> 0 then raise exception 'FAIL drafts: A sees B''s draft'; end if;
+end $$;
+
+-- [spaces.source_ref] seed provenance is not client-readable (column grant).
+do $$
+declare v text;
+begin
+  select source_ref into v from public.spaces
+  where id = '33333333-3333-3333-3333-333333333302';
+  raise exception 'FAIL source_ref: A read seed provenance (%)', v;
+exception when insufficient_privilege then null; -- expected
+end $$;
+
+-- [nearby_spaces] valid Bengaluru cell → Test Cafe near, Mumbai excluded (10km cap).
+do $$
+declare n int; d int;
+begin
+  select count(*) into n from public.nearby_spaces('tdr1v', 10000);
+  if n <> 1 then raise exception 'FAIL nearby_spaces: expected 1 row, got %', n; end if;
+  select distance_meters into d from public.nearby_spaces('tdr1v', 10000) limit 1;
+  if d is null or d > 2000 then
+    raise exception 'FAIL nearby_spaces: Test Cafe distance % not plausible for its own cell', d;
+  end if;
+  perform 1 from public.nearby_spaces('tdr1v', 10000) where name = 'Mumbai Cafe';
+  if found then raise exception 'FAIL nearby_spaces: Mumbai leaked into a Bengaluru cell'; end if;
+end $$;
+
+-- [nearby_spaces] the RPC surface accepts ONLY a geohash-5 cell (D8 boundary).
+do $$
+begin
+  begin
+    perform public.nearby_spaces('tdr1vf', 5000); -- 6 chars: too precise
+    raise exception 'FAIL cell-validation: 6-char geohash accepted';
+  exception when sqlstate '22023' then null; -- expected invalid_cell
+  end;
+  begin
+    perform public.nearby_spaces('12.97', 5000); -- raw-coordinate-looking input
+    raise exception 'FAIL cell-validation: non-geohash input accepted';
+  exception when sqlstate '22023' then null; -- expected invalid_cell
+  end;
+end $$;
+
+-- [nearby_events] published-only through the RPC as well.
+do $$
+declare n int;
+begin
+  select count(*) into n from public.nearby_events('tdr1v', 10000, interval '7 days');
+  if n <> 1 then raise exception 'FAIL nearby_events: expected only B''s published event, got %', n; end if;
+  perform 1 from public.nearby_events('tdr1v', 10000, interval '7 days')
+   where status <> 'published';
+  if found then raise exception 'FAIL nearby_events: non-published event leaked'; end if;
+end $$;
+
+-- [attendee_previews] first name + avatar only; handles are not even a column.
+do $$
+declare v text; n int;
+begin
+  select first_name into v from public.attendee_previews
+  where event_id = '55555555-5555-5555-5555-555555555501' limit 1;
+  if v is distinct from 'User' then
+    raise exception 'FAIL attendee_previews: expected first name ''User'', got %', v;
+  end if;
+  select count(*) into n from public.attendee_previews;
+  if n <> 1 then raise exception 'FAIL attendee_previews: % rows, expected 1 (going+published only)', n; end if;
+  begin
+    execute 'select handle from public.attendee_previews limit 1';
+    raise exception 'FAIL attendee_previews: handle column exists';
+  exception when undefined_column then null; -- expected
+  end;
+end $$;
+
 -- [anon] signed-out client sees nothing anywhere.
 set local role anon;
 set local request.jwt.claims to '{"role":"anon"}';
@@ -307,6 +401,12 @@ begin
     exception when insufficient_privilege then null; -- no grant at all: even better
     end;
   end loop;
+  -- 0003: the discovery RPCs are authenticated-only.
+  begin
+    perform public.nearby_spaces('tdr1v', 5000);
+    raise exception 'FAIL anon: nearby_spaces callable while signed out';
+  exception when insufficient_privilege then null; -- expected
+  end;
 end $$;
 
 reset role;
