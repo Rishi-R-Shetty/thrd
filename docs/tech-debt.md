@@ -40,7 +40,7 @@ Format:
 **Shortcut:** T2 seeded token values verbatim from the approved mock, as its task required.
 **Known limit:** ThrdButton primary and selected chips render normal-size white text below the 4.5:1 AA threshold — an accessibility-audit finding waiting to happen (App Store 4.0 design/a11y risk area).
 **Upgrade path:** darken terracotta light to ~(0.78, 0.38, 0.26) or bump button text to bold ≥18pt (large-text threshold is 3:1); verify both modes with a contrast checker.
-**Owner phase:** Phase 1, T10 phase-exit accessibility pass (design decision, needs one user sign-off on the adjusted hue).
+**Owner phase:** ~~Phase 1, T10~~ **RESOLVED (light mode)** 2026-07-13, commit `bdfaa78` in thrdspaces — user-approved darkening to (0.78, 0.38, 0.26), clears 4.5:1. **Residual:** the dark-mode variant (0.90, 0.53, 0.41) under white text is ≈2.4:1 — below even the 3:1 large-text bar. Options: ink-colored text on terracotta in dark mode, or a darker dark-variant. Needs a small design pass; owner: first Phase 2 UI task that touches buttons, or Phase 4 pre-submission audit at the latest.
 
 ## TD5 — Placeholder handle collisions at scale
 **Where:** thrdspaces/thrdspaces/Features/Onboarding/AuthRepository.swift:135 (`placeholderHandle(for:)`)
