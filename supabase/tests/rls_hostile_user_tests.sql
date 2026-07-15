@@ -66,6 +66,18 @@ insert into public.blocks (blocker_id, blocked_id) values
 insert into public.audit_log (user_id, action) values
   ('22222222-2222-2222-2222-222222222222', 'signup');
 
+-- 0004 fixture: purge victim P, past the 30-day grace, with audit rows the
+-- nightly purge must re-key (user_id → NULL + salted hash). B has NO deletion
+-- request and must survive the same run.
+insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at)
+values ('77777777-7777-7777-7777-777777777777', '00000000-0000-0000-0000-000000000000',
+        'authenticated', 'authenticated', 'p@test.local', 'x', now(), now());
+insert into public.users (id, handle, display_name, deletion_requested_at) values
+  ('77777777-7777-7777-7777-777777777777', 'user_p', 'User P', now() - interval '35 days');
+insert into public.audit_log (user_id, action) values
+  ('77777777-7777-7777-7777-777777777777', 'signup'),
+  ('77777777-7777-7777-7777-777777777777', 'rsvp');
+
 -- ── become hostile user A ───────────────────────────────────────────────────
 
 set local role authenticated;
@@ -385,6 +397,60 @@ begin
   end;
 end $$;
 
+-- ═══════════════════════════ 0004 rsvp / purge (Phase 2, T16) ════════════════
+-- The grants added in 0004 go to service_role ONLY; the client roles gain
+-- nothing. Asserted here as hostile user A (authenticated).
+
+-- [rsvp_event_tx] the RSVP transaction is callable by service_role only — a
+-- client cannot reach the capacity/waitlist write path directly.
+do $$
+begin
+  perform public.rsvp_event_tx('55555555-5555-5555-5555-555555555501', auth.uid(), 'rsvp');
+  raise exception 'FAIL rsvp-rpc: A executed rsvp_event_tx (service-role only)';
+exception when insufficient_privilege then null; -- expected
+end $$;
+
+-- [purge] the purge job is the owner-only re-key path — never client-callable.
+do $$
+begin
+  perform public.purge_deleted_accounts();
+  raise exception 'FAIL purge-rpc: A executed purge_deleted_accounts (owner only)';
+exception when insufficient_privilege then null; -- expected
+end $$;
+
+-- [events] 0004 added no client write path to the denormalized rsvp_count.
+do $$
+begin
+  update public.events set rsvp_count = 9999
+   where id = '55555555-5555-5555-5555-555555555501';
+  raise exception 'FAIL events-count: A wrote rsvp_count (service-role only)';
+exception when insufficient_privilege then null; -- expected: no UPDATE grant
+end $$;
+
+-- [tickets] and still no direct ticket write (0004 grants are service_role-only).
+do $$
+begin
+  insert into public.tickets (event_id, user_id, status)
+  values ('55555555-5555-5555-5555-555555555501', auth.uid(), 'going');
+  raise exception 'FAIL tickets-write: A inserted a ticket after 0004';
+exception when insufficient_privilege then null; -- expected
+end $$;
+
+-- [audit_log] the purge re-key is the SOLE UPDATE exception and runs only as
+-- the postgres owner. Prove immutability holds for the strongest NON-owner —
+-- service_role (BYPASSRLS) — whose UPDATE still fails on privilege.
+set local role service_role;
+do $$
+begin
+  update public.audit_log set user_id = null where action = 'signup';
+  raise exception 'FAIL audit-immutable: service_role UPDATEd audit_log (owner-only re-key)';
+exception when insufficient_privilege then null; -- expected
+end $$;
+reset role;
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated","aud":"authenticated"}';
+
 -- [anon] signed-out client sees nothing anywhere.
 set local role anon;
 set local request.jwt.claims to '{"role":"anon"}';
@@ -410,6 +476,38 @@ begin
 end $$;
 
 reset role;
+
+-- ═══════════════════ 0004 purge_deleted_accounts — owner path (T16) ══════════
+-- Runs as postgres (the job owner — the only role permitted). Proves the
+-- re-key + hard-delete effect and that a non-eligible user is untouched.
+do $$
+declare n int; h text;
+begin
+  perform public.purge_deleted_accounts();
+
+  -- P (past grace) hard-deleted: auth.users delete cascades to public.users.
+  if exists (select 1 from public.users where id = '77777777-7777-7777-7777-777777777777') then
+    raise exception 'FAIL purge: P survived the grace purge';
+  end if;
+  -- B (no deletion request) is untouched by the same run.
+  if not exists (select 1 from public.users where id = '22222222-2222-2222-2222-222222222222') then
+    raise exception 'FAIL purge: B was wrongly purged';
+  end if;
+  -- P's audit rows re-keyed: the uuid is gone, a salted sha256 recorded instead.
+  select count(*) into n from public.audit_log
+   where user_id = '77777777-7777-7777-7777-777777777777';
+  if n <> 0 then raise exception 'FAIL purge: % audit rows still carry P''s uuid', n; end if;
+  select metadata->>'purged_user' into h from public.audit_log
+   where metadata ? 'purged_user' limit 1;
+  if h is null or length(h) <> 64 then
+    raise exception 'FAIL purge: audit row not re-keyed to a sha256 hash (got %)', h;
+  end if;
+  -- One summary row records the batch size.
+  if not exists (select 1 from public.audit_log where action = 'purge_run') then
+    raise exception 'FAIL purge: no purge_run summary row';
+  end if;
+end $$;
+
 select 'ALL HOSTILE-USER TESTS PASSED' as result;
 
 rollback;
