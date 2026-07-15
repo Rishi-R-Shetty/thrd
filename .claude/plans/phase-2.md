@@ -18,7 +18,7 @@ Plus the Phase 2 must-haves pinned by the threat model (§5): coarsened location
 
 ## Hard prerequisite (user, carried from Phase 1)
 
-Hosted deploy: `supabase link` + `db push` (0001+0002, then Phase 2's 0003/0004), `functions deploy` + `THRD_JWT_SECRET`, at least one auth provider. **T13 onward cannot exit against an empty hosted project.** The seed pipeline (T20) also needs the hosted DB reachable with the service-role key kept local-only.
+Hosted deploy: `supabase link` + `db push` (0001+0002, then Phase 2's 0003/0004), `functions deploy` (now incl. `rsvp_event`) + `THRD_JWT_SECRET`, at least one auth provider. **T13 onward cannot exit against an empty hosted project.** The seed pipeline (T20) also needs the hosted DB reachable with the service-role key kept local-only. **(T16) Before `db push` of 0004:** enable the `pg_cron` extension on the hosted project (Dashboard → Database → Extensions) or 0004's `cron.schedule` fails to install; pre-seed the `purge_pepper` Vault secret per environment so the audit re-key hash stays stable across restores (the migration seeds a random local one).
 
 ## Data-shape contract (fully realized — Models/ replaces all mocks)
 
