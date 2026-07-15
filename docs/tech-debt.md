@@ -48,3 +48,10 @@ Format:
 **Known limit:** birthday bound ≈65k never-customized handles → unique-violation on signup surfaced as a generic error. Irrelevant at Phase 1–2 scale.
 **Upgrade path:** on 23505 retry with the next 4 UUID chars appended, or move placeholder generation server-side (trigger on auth.users insert — also fixes the T5 ponytail about transient ensureUserRow failures).
 **Owner phase:** Phase 3 (before growth marketing), or whenever the auth.users trigger lands.
+
+## TD6 — Map annotation sync ignores coordinate changes for an unchanged space id
+**Where:** thrdspaces/thrdspaces/Features/Discover/SpaceClusterAnnotation.swift:88 (`Coordinator.sync(spaces:on:)`)
+**Shortcut:** T14's annotation diff keys purely on `space.id` — a space present in both old and new loads is neither removed nor re-added, so if its lat/lng changed server-side mid-session the pin keeps rendering at the stale coordinate.
+**Known limit:** venue coordinates almost never change within a single session (a geocode correction or owner address edit landing between two Discover loads). Zero data-integrity impact; a stale pin until the next cold load.
+**Upgrade path:** in `sync`, for ids present in both sets, reassign `annotation.coordinate`/`title` when they differ (cheap; ~4 lines). Fold into the next task that touches the map layer.
+**Owner phase:** Phase 2 opportunistic (next map-touching task) or Phase 4 map polish.
