@@ -467,6 +467,46 @@ final class DiscoverTests: XCTestCase {
         XCTAssertNil(vm.host)
     }
 
+    // MARK: - Block invalidation (T18)
+
+    @MainActor
+    func testBlockSignalReloadsDiscoverAndDropsBlockedHostEvents() async {
+        // An isolated center keeps the assertion deterministic (no cross-test
+        // posts on `.default`). The repository returns both hosts' events on the
+        // first fetch, then — simulating the server's 0005 bidirectional
+        // exclusion after a block — only the kept host's event on the reload.
+        let center = NotificationCenter()
+        let repo = ReloadCountingRepository()
+        let vm = DiscoverViewModel(repository: repo,
+                                   notificationCenter: center,
+                                   initialAuthorizationStatus: .authorizedWhenInUse)
+
+        await vm.load()
+        XCTAssertEqual(repo.nearbyEventsCallCount, 1)
+        XCTAssertEqual(vm.events.count, 2, "first fetch shows both hosts' events")
+        XCTAssertTrue(vm.events.contains { $0.title == "Blocked Host Event" })
+
+        // The block-invalidation signal must drive a fresh load().
+        BlockSignal.userBlocked(on: center)
+        await waitUntil { repo.nearbyEventsCallCount >= 2 }
+
+        XCTAssertEqual(repo.nearbyEventsCallCount, 2, "block signal re-queried the repository")
+        XCTAssertEqual(vm.events.count, 1, "the blocked host's event dropped off on reload")
+        XCTAssertFalse(vm.events.contains { $0.title == "Blocked Host Event" },
+                       "the now-excluded host must not linger from the pre-block fetch")
+    }
+
+    /// Polls until `condition` holds or the timeout elapses — the block signal's
+    /// sink hops onto a `Task`, so the reload lands a beat after the post.
+    @MainActor
+    private func waitUntil(timeout: TimeInterval = 2,
+                           _ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000) // 5 ms
+        }
+    }
+
     // MARK: - Fixture builders
 
     private func makeEvent(id: UUID = UUID(),
@@ -528,6 +568,62 @@ private struct PartialFailRepository: DiscoverRepository {
     func communitiesMeetingAt(spaceID: UUID) async throws -> [Community] {
         if failCommunities { throw APIError.server(status: 500) }
         return try await base.communitiesMeetingAt(spaceID: spaceID)
+    }
+
+    func ownActiveTickets() async throws -> [Ticket] {
+        try await base.ownActiveTickets()
+    }
+}
+
+// MARK: - Reload-counting repository (T18)
+
+/// Reference-typed so the test can read `nearbyEventsCallCount` after the view
+/// model has driven the calls. Simulates the server's 0005 bidirectional
+/// exclusion: the first `nearbyEvents` fetch returns both hosts' events; every
+/// fetch after a block returns only the kept host's event, as if the blocked
+/// host's rows were filtered server-side. All other reads delegate to the base
+/// mock.
+private final class ReloadCountingRepository: DiscoverRepository {
+    private let base = MockDiscoverRepository()
+    private(set) var nearbyEventsCallCount = 0
+
+    private func makeEvent(title: String) -> NearbyEvent {
+        let startsAt = Date().addingTimeInterval(3600)
+        return NearbyEvent(id: UUID(), communityId: nil, hostId: UUID(), spaceId: UUID(),
+                           title: title, description: nil, coverUrl: nil,
+                           startsAt: startsAt, endsAt: startsAt.addingTimeInterval(7200),
+                           recurrenceRule: nil, capacity: nil, price: 0, status: .published,
+                           rsvpCount: 0, createdAt: .now, venueName: "Venue",
+                           latitude: 12.97, longitude: 77.59, distanceMeters: 100)
+    }
+
+    func nearbyEvents(near cell: Geohash5, radiusMeters: Int, horizonDays: Int) async throws -> [NearbyEvent] {
+        nearbyEventsCallCount += 1
+        // First fetch: both hosts. After a block (any later fetch): the blocked
+        // host's event is gone, exactly as migration 0005 makes the server behave.
+        return nearbyEventsCallCount == 1
+            ? [makeEvent(title: "Kept Host Event"), makeEvent(title: "Blocked Host Event")]
+            : [makeEvent(title: "Kept Host Event")]
+    }
+
+    func nearbySpaces(near cell: Geohash5, radiusMeters: Int) async throws -> [NearbySpace] {
+        try await base.nearbySpaces(near: cell, radiusMeters: radiusMeters)
+    }
+
+    func events(atSpace spaceID: UUID) async throws -> [Event] {
+        try await base.events(atSpace: spaceID)
+    }
+
+    func attendeePreviews(eventID: UUID) async throws -> [AttendeePreview] {
+        try await base.attendeePreviews(eventID: eventID)
+    }
+
+    func publicProfile(id: UUID) async throws -> PublicProfile? {
+        try await base.publicProfile(id: id)
+    }
+
+    func communitiesMeetingAt(spaceID: UUID) async throws -> [Community] {
+        try await base.communitiesMeetingAt(spaceID: spaceID)
     }
 
     func ownActiveTickets() async throws -> [Ticket] {

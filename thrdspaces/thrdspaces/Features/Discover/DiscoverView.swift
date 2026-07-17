@@ -23,6 +23,7 @@ struct DiscoverView: View {
     @StateObject private var viewModel: DiscoverViewModel
     @State private var viewMode: DiscoverViewMode
     @State private var sheetDetent: PresentationDetent = .fraction(0.35)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Accepts a pre-built view model so previews/tests can seed state (e.g.
     /// a denied authorization status) without depending on live simulator
@@ -150,6 +151,11 @@ struct DiscoverView: View {
                         }
                     }
                     .padding(Theme.Spacing.md)
+                    // Block invalidation (T18) reloads events in place; animate the
+                    // card drop so a blocked host's card eases out instead of a hard
+                    // cut. Reduce Motion keeps the change instant.
+                    .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.7),
+                               value: viewModel.rankedEvents.map(\.id))
                 }
             }
         }
@@ -289,6 +295,7 @@ struct NearYouSheet: View {
     let venueSpace: (NearbyEvent) -> NearbySpace?
     /// The caller's own ticket status for an event, if any (drives "your spot").
     let ticketStatus: (NearbyEvent) -> TicketStatus?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // Own NavigationStack so a tapped card pushes Event Detail within the
@@ -318,6 +325,10 @@ struct NearYouSheet: View {
                     }
                 }
                 .padding(.horizontal, 20)
+                // Block invalidation (T18): ease a blocked host's card out of the
+                // sheet on reload instead of a hard cut. Reduce Motion → instant.
+                .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.7),
+                           value: events.map(\.id))
             }
             .background(Theme.cream)
             .toolbar(.hidden, for: .navigationBar)

@@ -177,6 +177,7 @@ final class DiscoverViewModel: ObservableObject {
     /// outside this initializer's actor isolation.
     init(repository: DiscoverRepository? = nil,
          locationManager: LocationManager? = nil,
+         notificationCenter: NotificationCenter = .default,
          initialAuthorizationStatus: CLAuthorizationStatus? = nil) {
         let locationManager = locationManager ?? LocationManager()
         // T14 flip: the live repository is the production default now that this
@@ -190,6 +191,19 @@ final class DiscoverViewModel: ObservableObject {
         // nearest launch city to whatever coarse coordinate we already have (nil
         // before the first fix → the terminal fallback, Bengaluru).
         self.centerCoordinate = LaunchCity.nearest(to: locationManager.coarseCoordinate).center
+
+        // Block invalidation (T18): after ANY successful block the server already
+        // excludes the blocked user bidirectionally (migration 0005), so a
+        // re-fetch drops their events/spaces. Re-run load() on the signal so a
+        // blocked host's card can't linger from a pre-block fetch when the user
+        // pops back to Discover. Wired before the seam guard so it is always
+        // active — block safety must not depend on the live-location path.
+        // ponytail: reloads the whole nearby set on any block — trivial at
+        // Phase 2 fetch sizes; a targeted single-row drop is the upgrade if the
+        // reload cost ever shows up in profiling.
+        notificationCenter.publisher(for: .thrdUserBlocked)
+            .sink { [weak self] _ in Task { await self?.load() } }
+            .store(in: &cancellables)
 
         // The test/preview seam freezes state on purpose: CLLocationManager
         // delivers an authorization callback asynchronously right after a

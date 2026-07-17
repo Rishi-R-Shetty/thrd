@@ -66,6 +66,39 @@ insert into public.blocks (blocker_id, blocked_id) values
 insert into public.audit_log (user_id, action) values
   ('22222222-2222-2222-2222-222222222222', 'signup');
 
+-- ── 0005 fixtures (T18 blocked-invisibility) ────────────────────────────────
+-- C is public and A has blocked C (an OUTGOING block from A — exercises the
+-- predicate's second leg; the B→A block above exercises the first). D is public
+-- with no block: the positive control that must stay visible. A, C, D each host
+-- a published event at Test Cafe, and C, D also RSVP 'going' to B's published
+-- event (E1) — so both block directions are checkable across profiles, the
+-- attendee list, and the discovery feed. Tickets live only on B's event (which
+-- A neither hosts nor holds a ticket on), so the "A sees 0 tickets" invariant
+-- above is preserved.
+insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at)
+values
+  ('cccccccc-cccc-cccc-cccc-cccccccccccc', '00000000-0000-0000-0000-000000000000',
+   'authenticated', 'authenticated', 'c@test.local', 'x', now(), now()),
+  ('dddddddd-dddd-dddd-dddd-dddddddddddd', '00000000-0000-0000-0000-000000000000',
+   'authenticated', 'authenticated', 'd@test.local', 'x', now(), now());
+insert into public.users (id, handle, display_name, profile_visibility) values
+  ('cccccccc-cccc-cccc-cccc-cccccccccccc', 'user_c', 'Cara Public', 'public'),
+  ('dddddddd-dddd-dddd-dddd-dddddddddddd', 'user_d', 'Dan Control', 'public');
+insert into public.blocks (blocker_id, blocked_id) values
+  ('11111111-1111-1111-1111-111111111111', 'cccccccc-cccc-cccc-cccc-cccccccccccc');  -- A blocks C
+insert into public.events (id, host_id, space_id, title, starts_at, ends_at, status) values
+  ('55555555-5555-5555-5555-5555555555a1', '11111111-1111-1111-1111-111111111111',
+   '33333333-3333-3333-3333-333333333333', 'A published event', now() + interval '1 day', now() + interval '1 day 2 hours', 'published'),
+  ('55555555-5555-5555-5555-5555555555c1', 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+   '33333333-3333-3333-3333-333333333333', 'C published event', now() + interval '1 day', now() + interval '1 day 2 hours', 'published'),
+  ('55555555-5555-5555-5555-5555555555d1', 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+   '33333333-3333-3333-3333-333333333333', 'D published event', now() + interval '1 day', now() + interval '1 day 2 hours', 'published');
+insert into public.tickets (id, event_id, user_id) values
+  ('66666666-6666-6666-6666-6666666666c1', '55555555-5555-5555-5555-555555555501',
+   'cccccccc-cccc-cccc-cccc-cccccccccccc'),
+  ('66666666-6666-6666-6666-6666666666d1', '55555555-5555-5555-5555-555555555501',
+   'dddddddd-dddd-dddd-dddd-dddddddddddd');
+
 -- 0004 fixture: purge victim P, past the 30-day grace, with audit rows the
 -- nightly purge must re-key (user_id → NULL + salted hash). B has NO deletion
 -- request and must survive the same run.
@@ -149,6 +182,19 @@ begin
   if n <> 0 then raise exception 'FAIL profiles: B is profile_visibility=private but visible'; end if;
 end $$;
 
+-- [public_profiles] T18/D13: a blocked public user (A→C) is excluded; the
+-- unblocked public control D stays visible.
+do $$
+declare n int;
+begin
+  select count(*) into n from public.public_profiles
+   where id = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+  if n <> 0 then raise exception 'FAIL profiles: A blocked C but C is still visible to A'; end if;
+  select count(*) into n from public.public_profiles
+   where id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  if n <> 1 then raise exception 'FAIL profiles: unblocked public control D not visible to A'; end if;
+end $$;
+
 -- [communities] private community invisible; public one visible.
 do $$
 declare n int;
@@ -222,12 +268,16 @@ begin
 exception when insufficient_privilege then null; -- expected
 end $$;
 
--- [blocks] A cannot see B's block of A (blocked-user invisibility of the block itself).
+-- [blocks] A sees only its OWN outgoing blocks (A→C), never a block where A is
+-- the target: the B→A block stays invisible so the blocked user can't learn of
+-- it (manage_block invariant).
 do $$
 declare n int;
 begin
-  select count(*) into n from public.blocks;
-  if n <> 0 then raise exception 'FAIL blocks: A can see that B blocked A'; end if;
+  perform 1 from public.blocks where blocked_id = auth.uid();
+  if found then raise exception 'FAIL blocks: A can see a block targeting A'; end if;
+  select count(*) into n from public.blocks where blocker_id <> auth.uid();
+  if n <> 0 then raise exception 'FAIL blocks: A sees % block rows it did not create', n; end if;
 end $$;
 
 -- [blocks] A cannot write blocks directly (D4: manage_block Edge Function only).
@@ -368,28 +418,39 @@ begin
   end;
 end $$;
 
--- [nearby_events] published-only through the RPC as well.
+-- [nearby_events] published-only AND blocked hosts excluded (T18). Near
+-- Bengaluru the published events are B's (…01), A's (…a1), C's (…c1), D's (…d1).
+-- A sees its own + D's; B's (B→A) and C's (A→C) vanish from the feed.
 do $$
 declare n int;
 begin
-  select count(*) into n from public.nearby_events('tdr1v', 10000, interval '7 days');
-  if n <> 1 then raise exception 'FAIL nearby_events: expected only B''s published event, got %', n; end if;
   perform 1 from public.nearby_events('tdr1v', 10000, interval '7 days')
    where status <> 'published';
   if found then raise exception 'FAIL nearby_events: non-published event leaked'; end if;
+  perform 1 from public.nearby_events('tdr1v', 10000, interval '7 days')
+   where host_id in ('22222222-2222-2222-2222-222222222222',
+                     'cccccccc-cccc-cccc-cccc-cccccccccccc');
+  if found then raise exception 'FAIL nearby_events: a blocked host''s event is visible to A'; end if;
+  select count(*) into n from public.nearby_events('tdr1v', 10000, interval '7 days')
+   where id in ('55555555-5555-5555-5555-5555555555a1',
+                '55555555-5555-5555-5555-5555555555d1');
+  if n <> 2 then raise exception 'FAIL nearby_events: expected A''s + D''s events visible, got %', n; end if;
 end $$;
 
--- [attendee_previews] first name + avatar only; handles are not even a column.
+-- [attendee_previews] first name + avatar only, no handle column, AND blocked
+-- pair excluded (T18/F1). B (B→A) and C (A→C) both RSVP'd E1; only the unblocked
+-- attendee D remains visible to A — proving both block directions are filtered.
 do $$
 declare v text; n int;
 begin
+  select count(*) into n from public.attendee_previews
+   where event_id = '55555555-5555-5555-5555-555555555501';
+  if n <> 1 then raise exception 'FAIL attendee_previews: % rows, expected 1 (blocked B and C excluded)', n; end if;
   select first_name into v from public.attendee_previews
-  where event_id = '55555555-5555-5555-5555-555555555501' limit 1;
-  if v is distinct from 'User' then
-    raise exception 'FAIL attendee_previews: expected first name ''User'', got %', v;
+   where event_id = '55555555-5555-5555-5555-555555555501' limit 1;
+  if v is distinct from 'Dan' then
+    raise exception 'FAIL attendee_previews: expected unblocked ''Dan'', got %', v;
   end if;
-  select count(*) into n from public.attendee_previews;
-  if n <> 1 then raise exception 'FAIL attendee_previews: % rows, expected 1 (going+published only)', n; end if;
   begin
     execute 'select handle from public.attendee_previews limit 1';
     raise exception 'FAIL attendee_previews: handle column exists';
@@ -475,6 +536,32 @@ begin
   end;
 end $$;
 
+reset role;
+
+-- ═══════════════════════ T18 reverse direction (as user C) ═══════════════════
+-- The A→C block must hide A from C too (bidirectional), even though C cannot see
+-- the block row itself (blocks_select_own shows only outgoing blocks, and C made
+-- none). This proves the exclusion is driven by blocked_between's DEFINER read
+-- of both rows, not by the caller's own RLS view of `blocks`.
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"cccccccc-cccc-cccc-cccc-cccccccccccc","role":"authenticated","aud":"authenticated"}';
+do $$
+declare n int;
+begin
+  -- A is public, but invisible to C because A blocked C.
+  select count(*) into n from public.public_profiles
+   where id = '11111111-1111-1111-1111-111111111111';
+  if n <> 0 then raise exception 'FAIL profiles-reverse: A is visible to blocked C'; end if;
+  -- Positive control: unblocked public D stays visible to C.
+  select count(*) into n from public.public_profiles
+   where id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  if n <> 1 then raise exception 'FAIL profiles-reverse: D not visible to C'; end if;
+  -- A's discovery event is hidden from C as well.
+  perform 1 from public.nearby_events('tdr1v', 10000, interval '7 days')
+   where host_id = '11111111-1111-1111-1111-111111111111';
+  if found then raise exception 'FAIL nearby_events-reverse: A''s event visible to blocked C'; end if;
+end $$;
 reset role;
 
 -- ═══════════════════ 0004 purge_deleted_accounts — owner path (T16) ══════════

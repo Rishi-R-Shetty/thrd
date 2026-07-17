@@ -251,6 +251,9 @@ final class ProfileViewModel: ObservableObject {
         do {
             try await functions.block(userID: userID)
             actionMessage = "This person has been blocked."
+            // Block invalidation (T18): tell Discover to re-fetch so this person's
+            // events/previews drop off promptly, not on the next manual refresh.
+            BlockSignal.userBlocked()
         } catch {
             actionMessage = ProfileErrorCopy.message(for: error)
         }

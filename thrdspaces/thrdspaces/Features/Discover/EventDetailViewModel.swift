@@ -60,19 +60,35 @@ final class EventDetailViewModel: ObservableObject {
 
     private let repository: DiscoverRepository
     private let functions = EdgeFunctionClient()
+    /// The center block-invalidation posts/observes on (T18) — a test seam;
+    /// production uses `.default`.
+    private let notificationCenter: NotificationCenter
+    private var cancellables = Set<AnyCancellable>()
     /// The RSVP write, injected so tests can drive optimistic/reconcile/rollback
     /// without a live backend. Production uses the real Edge Function call.
     private let performRSVP: @Sendable (UUID, RSVPAction) async throws -> RSVPResult
 
     init(event: NearbyEvent, venueSpace: NearbySpace? = nil,
          repository: DiscoverRepository = SupabaseDiscoverRepository(),
+         notificationCenter: NotificationCenter = .default,
          performRSVP: @escaping @Sendable (UUID, RSVPAction) async throws -> RSVPResult
             = { try await EdgeFunctionClient().rsvp(eventID: $0, action: $1) }) {
         self.event = event
         self.venueSpace = venueSpace
         self.repository = repository
+        self.notificationCenter = notificationCenter
         self.rsvpCount = event.rsvpCount
         self.performRSVP = performRSVP
+
+        // Block invalidation (T18): if a block happens anywhere while this detail
+        // is on screen, re-fetch the attendee strip so a now-excluded attendee
+        // drops off. Previews carry no ids (first name only), so a known-blocked
+        // row can't be filtered client-side — a re-fetch through the server's
+        // 0005 exclusion is the only correct drop. Silent refetch (no host-loader
+        // flash); host isn't reloaded because a block never changes it here.
+        notificationCenter.publisher(for: .thrdUserBlocked)
+            .sink { [weak self] _ in Task { await self?.refreshAttendeesAfterBlock() } }
+            .store(in: &cancellables)
     }
 
     /// Attendees beyond the ones shown as previews — "and N more going". Clamped
@@ -156,8 +172,21 @@ final class EventDetailViewModel: ObservableObject {
         do {
             try await functions.block(userID: event.hostId)
             actionMessage = "This person has been blocked."
+            // Tell Discover (and any open attendee strip) to re-fetch so the now-
+            // excluded host drops off without waiting for a manual pull-to-refresh.
+            BlockSignal.userBlocked(on: notificationCenter)
         } catch {
             actionMessage = ProfileErrorCopy.message(for: error)
+        }
+    }
+
+    /// Silent attendee-strip refetch after a block signal (T18). The server
+    /// (migration 0005) now excludes the blocked user, so a re-fetch is what drops
+    /// any blocked attendee from the preview strip. A failure leaves the current
+    /// strip in place — degrade to stale rather than blanking a working section.
+    private func refreshAttendeesAfterBlock() async {
+        if let previews = try? await repository.attendeePreviews(eventID: event.id) {
+            attendeePreviews = previews
         }
     }
 }
