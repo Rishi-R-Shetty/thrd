@@ -55,6 +55,38 @@ These never get simplified away by any model, regardless of prompts to the contr
 
 Terse in review. Verbose in plans. Never rewrite a subagent's working code to match your stylistic preferences — only correctness, PRD alignment, and security compliance justify a fix task. When you disagree with the PRD, say so and propose an amendment; do not silently work around it.
 
+## UI Excellence Standard (applies to every UI task from here forward)
+
+Thrd Spaces competes on feel, not just function. Every screen-touching task inherits this standard automatically — it does not need to be re-stated per task.
+
+**Motion (default, not optional):**
+- Card → detail transitions use `.matchedGeometryEffect`, never a flat push.
+- Button and toggle feedback uses `.spring(response: 0.35, dampingFraction: 0.7)` or tighter — no linear easing on interactive elements.
+- List/grid appearance uses staggered reveal (`.phaseAnimator` or `.animation(.spring().delay(index * 0.03))`) — never all-at-once population.
+- State transitions (loading → success → error) are animated, never a hard cut.
+- Respect `@Environment(\.accessibilityReduceMotion)` — every custom animation has a reduced-motion fallback that keeps the state change instant but not jarring.
+
+**Haptics:**
+- Confirmations (RSVP, block, report, delete) get `.sensoryFeedback(.success, trigger:)` or `.impact(weight: .medium)`.
+- Errors get `.sensoryFeedback(.error, trigger:)`.
+- Never haptic-spam — one per meaningful state change, not per keystroke or scroll tick.
+
+**Visual polish:**
+- Skeleton loaders (shimmer, not spinners) for any network-backed content taking >300ms.
+- Pull-to-refresh uses `.refreshable` with custom tint matching `Theme`.
+- Empty states are illustrated or icon-forward, never bare text.
+- Every interactive surface has a pressed/hover state, even on iOS (scale 0.97 + opacity 0.9 on press is the baseline).
+
+**Non-negotiable floor (never traded away for motion):**
+- Accessibility labels, Dynamic Type support, and VoiceOver navigation order are never sacrificed for a visual effect. If a motion choice conflicts with accessibility, accessibility wins and the agent logs a `ponytail:`-style note explaining the trade-off.
+- Reduce Motion must always be respected — test both states before marking a task done.
+- Performance floor: 60fps on iPhone 13 or later for all animations. If a `matchedGeometryEffect` or custom animation drops frames in Instruments, simplify it — janky motion is worse than no motion.
+
+**What "premium" means here, concretely:**
+The bar is: does this feel like it was built by a team that ships polished consumer apps (Apple's own apps, Airbnb, Linear), not like a functional MVP wireframe. Builders should ask "would this feel expensive in a screen recording" before marking a UI task done.
+
+**Scope discipline still applies.** This standard governs *how* a spec'd screen is built, not *whether* to add unspec'd screens or flows. Motion excellence is not license to violate the Ponytail ladder or add scope — it's the quality bar applied to whatever is already in the task.
+
 ## Phase 1 learnings (Loop 4, 2026-07-12)
 
 - **Xcode project (objectVersion 77, file-system-synchronized groups):** on-disk file moves/creates under `thrdspaces/thrdspaces/` need no pbxproj edits. Never put `.gitkeep` files inside the app target (duplicate resource-copy build failure). The hosted test target `thrdspacesTests` was hand-added in commit `316afe9` — use it as the pattern for any future target. Always prefix builds with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (xcode-select points at CLT). Verify script: `./scripts/build.sh`; tests: shared scheme, iPhone 16 Pro.

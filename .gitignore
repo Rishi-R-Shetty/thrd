@@ -1,4 +1,43 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
 xcuserdata/
 *.xcuserstate
-.claude/questions.md # transient
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+.swiftpm/
+
+# CocoaPods (if you ever use it)
+Pods/
+
+# fastlane (if you ever use it)
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Claude Code — transient session state
+.claude/questions.md.bak
+.claude/plans/*.tmp
+
+# Local secrets — never commit
+.env
+.env.local
+*.p12
+*.mobileprovision
+SupabaseServiceRoleKey.txt
