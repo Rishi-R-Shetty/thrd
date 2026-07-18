@@ -1,6 +1,14 @@
 # Phase 2 Plan — Discovery & Maps (Weeks 4–7)
 
-**Status:** APPROVED — 2026-07-13 by user. Loop 2 active: T11 → Sonnet, T12 → orchestrator.
+**Status:** 10/11 COMPLETE (T11–T20 approved). T21 phase-exit: closed except the on-device end-to-end demo, which is gated on the hosted deploy (a standing user action). Phase 3 plan drafted (`.claude/plans/phase-3.md`).
+
+**T21 completion notes (Loop 4, 2026-07-18):**
+- **PRD exit criterion** ("a user can find a real event nearby and RSVP") — built end-to-end and verified against the LOCAL stack (T13 live RPC discovery; T16 `rsvp_event` 8/8 concurrency/capacity/waitlist; T17 UI reconcile). The **on-device demo with hosted seeded data is the one open item**, gated on the hosted deploy (`supabase link` + `db push` 0001–0005 + `functions deploy` + T20 `--load` against the hosted URL). Tracked as a post-deploy checklist item, not a build gap.
+- **threat-model §5 Phase 2 must-haves — all shipped:** coarsened location queries (D8: geohash-5 compile-time boundary, client snaps before transport, server re-snaps — T12/T13); blocked-user invisibility (bidirectional, DEFINER-inlined, widened to `public_profiles` — T18/D13/D15); first-meeting safety sheet (server-derived trigger, non-dismissable — T19); panic button (±2h window, Keychain-only contact per D9 — T19).
+- **Security posture:** the Phase-2 adversarial audit (`docs/security/audit-phase2-2026-07.md`) found no A-reads-B authorization break; its live gaps (F1/F1b) were closed by T18; the rest (F2–F19) are routed to Phase 3 T22/T23. `service_role`/key greps clean across the app tree (only doc-comment references remain). Hostile suite `ALL PASSED` on a fresh 0001→0005 stack.
+- **Repo:** the iOS app was un-nested from its own git repo into the parent (history preserved at `github.com/Rishi-R-Shetty/thrd-app`); `scripts/build.sh` is at the repo root; build/test run from the repo root.
+
+**Original status:** APPROVED — 2026-07-13 by user. Loop 2: T11 → Sonnet, T12 → orchestrator (all tasks now complete).
 **Sources:** PRD §4 Phase 2 + §2 entities · threat-model.md §5 Phase 2 must-haves · app-store-plan.md (§3 privacy manifests, §5.1.5 location) · Artifact A PLANNED policies · Artifact B stubs · Phase 1 completion notes · decisions D6–D9 (two-city defaults, OSM sourcing, coarsening semantics, device-local emergency contact).
 **Precondition met:** TD4 light-mode terracotta landed (`bdfaa78`) before any Phase 2 build, per user instruction.
 
