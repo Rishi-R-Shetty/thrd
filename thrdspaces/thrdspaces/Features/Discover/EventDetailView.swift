@@ -10,6 +10,7 @@
 //  attendee-list-privacy guard). The RSVP CTA is a disabled stub until T17.
 //
 
+import Combine
 import CoreLocation
 import SwiftUI
 
@@ -19,6 +20,10 @@ struct EventDetailView: View {
     @State private var showReport = false
     @State private var showBlockConfirm = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Re-evaluated on each render so the panic button appears/disappears as the
+    /// ±2h window opens and closes while Event Detail is on screen (T19).
+    @State private var now = Date()
+    private let clock = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     init(event: NearbyEvent, venueSpace: NearbySpace? = nil, repository: DiscoverRepository? = nil) {
         _viewModel = StateObject(wrappedValue: repository.map {
@@ -41,6 +46,7 @@ struct EventDetailView: View {
                 hostSection
                 venueSection
                 attendeeSection
+                panicSection
                 rsvpSection
             }
             .padding(Theme.Spacing.md)
@@ -49,6 +55,13 @@ struct EventDetailView: View {
         .navigationTitle("Event")
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.load() }
+        .onReceive(clock) { now = $0 }
+        // First-meeting safety sheet (T19): non-dismissable, gates the FIRST RSVP.
+        .sheet(isPresented: $viewModel.showSafetySheet) {
+            FirstMeetingSafetySheet(
+                onAcknowledge: { Task { await viewModel.acknowledgeSafetyThenRSVP() } },
+                onCancel: { viewModel.dismissSafetySheet() })
+        }
         .sheet(isPresented: $showReport) {
             // Subject is the host user id — available from the event even before
             // the host profile finishes loading, so Report is always reachable.
@@ -252,6 +265,18 @@ struct EventDetailView: View {
                         .foregroundStyle(Theme.forest)
                 }
             }
+        }
+    }
+
+    // MARK: Panic button (T19 — visible only within ±2h of start)
+
+    @ViewBuilder
+    private var panicSection: some View {
+        if PanicButton.isWithinWindow(now: now, startsAt: event.startsAt) {
+            PanicButton(venueName: event.venueName,
+                        latitude: event.latitude,
+                        longitude: event.longitude)
+                .transition(.opacity)
         }
     }
 

@@ -55,6 +55,9 @@ struct SettingsView: View {
         } message: {
             Text(signOutError ?? "")
         }
+        .sheet(isPresented: $showEmergencyContact) {
+            EmergencyContactView()
+        }
     }
 
     // MARK: Sections
@@ -80,8 +83,25 @@ struct SettingsView: View {
                 }
                 .accessibilityLabel("Contact support at \(email)")
             }
+
+            // ODbL attribution for the OSM-sourced venue data (T20 / D7).
+            // Required whenever we display OpenStreetMap-derived data.
+            if let osm = URL(string: "https://www.openstreetmap.org/copyright") {
+                Link(destination: osm) {
+                    HStack {
+                        Label("Map data", systemImage: "map")
+                        Spacer()
+                        Text("© OpenStreetMap contributors")
+                            .font(Theme.Typography.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityLabel("Map data © OpenStreetMap contributors. Opens the OpenStreetMap copyright page.")
+            }
         }
     }
+
+    @State private var showEmergencyContact = false
 
     private var safetySection: some View {
         Section("Safety") {
@@ -91,6 +111,14 @@ struct SettingsView: View {
                 Label("Blocked users", systemImage: "hand.raised")
             }
             .accessibilityLabel("Blocked users")
+
+            // Emergency contact (T19). Kept only on-device (D9); presented as a
+            // sheet since the editor is its own NavigationStack.
+            Button { showEmergencyContact = true } label: {
+                Label("Emergency contact", systemImage: "phone.badge.plus")
+            }
+            .accessibilityLabel("Emergency contact")
+            .accessibilityHint("Set a trusted contact for the panic button, stored only on this device")
         }
     }
 

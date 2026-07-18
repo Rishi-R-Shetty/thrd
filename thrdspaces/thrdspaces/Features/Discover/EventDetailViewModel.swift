@@ -58,6 +58,26 @@ final class EventDetailViewModel: ObservableObject {
     @Published private(set) var rsvpSuccessPulse = 0
     @Published private(set) var rsvpErrorPulse = 0
 
+    // MARK: First-meeting safety gate (T19)
+
+    /// True when the caller has no active tickets at load — i.e. their next RSVP
+    /// is their first, so the first-meeting safety sheet must gate it. Derived
+    /// server-side from `ownActiveTickets()`, NOT UserDefaults: a reinstall still
+    /// reads the server's tickets, so the gate can't be bypassed by clearing
+    /// local state (threat-model Layer 7).
+    ///
+    /// ponytail: "first-ever RSVP" reading — an empty active-ticket set gates the
+    /// sheet. `ownActiveTickets()` excludes cancelled/checked-in rows, so a user
+    /// whose only prior tickets are checked-in would see it again; the fuller
+    /// version keys the gate on *new host/community* (needs host linkage on the
+    /// ticket read) and counts historical attendance. Acceptable Phase-2 gate.
+    @Published private(set) var isFirstRSVP = false
+    /// Drives presentation of the non-dismissable `FirstMeetingSafetySheet`.
+    @Published var showSafetySheet = false
+    /// Set once the user acknowledges the sheet in this session, so a subsequent
+    /// tap in the same session proceeds straight to the RSVP.
+    private var safetyAcknowledged = false
+
     private let repository: DiscoverRepository
     private let functions = EdgeFunctionClient()
     /// The center block-invalidation posts/observes on (T18) — a test seam;
@@ -119,13 +139,37 @@ final class EventDetailViewModel: ObservableObject {
         // "RSVP" state (tapping then reconciles idempotently against the server).
         if let tickets = try? await ticketsResult {
             rsvpStatus = tickets.first { $0.eventId == event.id }?.status
+            // No active tickets → the next RSVP is the caller's first, so gate it
+            // behind the first-meeting safety sheet (T19). Server-derived, so a
+            // reinstall (which clears any local flag) still shows the sheet.
+            isFirstRSVP = tickets.isEmpty
         }
     }
 
-    /// RSVP to this event. Optimistically shows "going" (the common outcome),
-    /// then reconciles to whatever the server returns (which may be "waitlist" if
-    /// the event filled). Rolls back visually on failure.
-    func rsvp() async { await submitRSVP(.rsvp) }
+    /// RSVP to this event. If this is the caller's first RSVP and they haven't
+    /// yet acknowledged the first-meeting safety sheet this session, present the
+    /// sheet and STOP — no server call happens until `acknowledgeSafetyThenRSVP()`
+    /// is invoked from the sheet's Continue action (T19). Otherwise proceed.
+    func rsvp() async {
+        if isFirstRSVP && !safetyAcknowledged {
+            showSafetySheet = true
+            return
+        }
+        await submitRSVP(.rsvp)
+    }
+
+    /// Called from the safety sheet's Continue: records acknowledgement, dismisses
+    /// the sheet, and performs the gated RSVP.
+    func acknowledgeSafetyThenRSVP() async {
+        safetyAcknowledged = true
+        showSafetySheet = false
+        await submitRSVP(.rsvp)
+    }
+
+    /// Called from the safety sheet's "Not now": dismiss without RSVPing.
+    func dismissSafetySheet() {
+        showSafetySheet = false
+    }
 
     /// Cancel the caller's RSVP. Optimistically clears the spot, then reconciles.
     func cancelRSVP() async { await submitRSVP(.cancel) }
